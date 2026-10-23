@@ -1,0 +1,65 @@
+name: Interactions spec canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      compliance_exit_code:
+        description: exit code of the stand-in compliance step
+        required: true
+        default: "1"
+
+permissions: {}
+
+jobs:
+  interactions-spec-canary:
+    name: interactions-spec-canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      compliance: ${{ steps.compliance.outcome }}
+    steps:
+      - name: Stand-in for the compliance tests
+        id: compliance
+        run: exit ${{ inputs.compliance_exit_code }}
+
+  tracking-issue:
+    name: tracking-issue
+    needs: interactions-spec-canary
+    if: always() && github.event_name != 'pull_request' && github.repository == 'mateo-berri/canary-scratch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: File the tracking issue on a red compliance step, close it on a green one
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          COMPLIANCE_OUTCOME: ${{ needs.interactions-spec-canary.outputs.compliance }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const title = "Interactions spec canary is red";
+            const outcome = process.env.COMPLIANCE_OUTCOME;
+            const runUrl = process.env.RUN_URL;
+            const query = `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:title "${title}"`;
+            const { data: found } = await github.rest.search.issuesAndPullRequests({ q: query, per_page: 1 });
+            const open = found.items[0];
+            if (outcome === "success") {
+              if (open === undefined) return;
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body: `Green again: ${runUrl}` });
+              await github.rest.issues.update({ ...context.repo, issue_number: open.number, state: "closed" });
+              return;
+            }
+            if (outcome !== "failure") return;
+            if (open !== undefined) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body: `Still red: ${runUrl}` });
+              return;
+            }
+            await github.rest.issues.create({
+              ...context.repo,
+              title,
+              assignees: ["mateo-berri"],
+              body: `The scheduled run of tests/unit/interactions/test_openapi_compliance.py against Google's live Interactions spec failed: ${runUrl}\n\nlitellm/types/interactions/README.md says how to refresh the snapshot and regenerate the types.`,
+            });
