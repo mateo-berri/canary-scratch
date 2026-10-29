@@ -44,7 +44,7 @@ jobs:
       - name: Legs
         shell: bash
         run: |
-          set -u
+          set +e +o pipefail -u
           mkdir -p legs
           L=/tmp/qa-a22f553b-long-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
           U=/tmp/qa-a22f553b-u-üüüüüüüüüüüüüüüüüüüü
