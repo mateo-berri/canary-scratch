@@ -1,0 +1,75 @@
+name: macOS unit legs
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: BerriAI/litellm commit for the before leg
+        required: true
+      head:
+        description: BerriAI/litellm commit for the after leg
+        required: true
+
+permissions: {}
+
+jobs:
+  legs:
+    name: ${{ matrix.leg }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [before, after]
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          repository: BerriAI/litellm
+          ref: ${{ matrix.leg == 'before' && inputs.base || inputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.10.9"
+      - name: Install
+        run: |
+          uv sync --frozen --group ci --group proxy-dev --extra google --extra proxy --extra semantic-router --extra saml --extra caching --extra extra_proxy --extra proxy-runtime --extra utils
+          uv run --no-sync prisma generate --schema litellm/proxy/schema.prisma
+      - name: Legs
+        shell: bash
+        run: |
+          set -u
+          mkdir -p legs
+          L=/tmp/qa-a22f553b-long-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          U=/tmp/qa-a22f553b-u-üüüüüüüüüüüüüüüüüüüü
+          mkdir -p "$L" "$U"
+          {
+            git log --oneline -1
+            sw_vers
+            uname -m
+            uv run --no-sync python -c 'import os, platform, sys, tempfile; d = tempfile.gettempdir(); print(platform.platform(), sys.version.split()[0]); print("TMPDIR", d, len(os.fsencode(d)), "bytes")'
+          } | tee legs/env.txt
+          run_case() {
+            name=$1; shift
+            echo "== $name: $*"
+            env "$@" > "legs/$name.txt" 2>&1
+            grep -E '^(FAILED|ERROR) ' "legs/$name.txt" | head -40
+            grep -c 'AF_UNIX path too long' "legs/$name.txt" | sed 's/^/AF_UNIX path too long lines: /'
+            tail -1 "legs/$name.txt"
+          }
+          run_case sidecar uv run --no-sync pytest tests/unit/proxy/hooks/test_proxy_track_cost_callback.py -q -k sidecar_a_compact_event
+          run_case other uv run --no-sync pytest tests/unit/proxy/test_collector.py tests/unit/proxy/spend_tracking/test_spend_event_producer.py tests/unit/proxy/db/test_pgbouncer.py -q
+          run_case long TMPDIR="$L" uv run --no-sync pytest tests/unit/proxy/db/test_pgbouncer.py tests/unit/gateway/test_launch.py tests/unit/integrations/datadog/test_datadog.py -q
+          run_case unicode TMPDIR="$U" uv run --no-sync pytest tests/unit/proxy/db/test_pgbouncer.py tests/unit/gateway/test_launch.py tests/unit/integrations/datadog/test_datadog.py -q
+          echo "sock dirs left: $(ls -a "${TMPDIR:-/tmp}" /tmp "$L" "$U" | grep -c '^sock')"
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        if: always()
+        with:
+          name: legs-${{ matrix.leg }}
+          path: legs/
